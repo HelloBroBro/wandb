@@ -584,7 +584,7 @@ jobs:
           command: nox -t proto-check
       - run:
           name: Lint
-          command: tox run -v -e auto-codegen-check
+          command: tox run -v -e "auto-codegen-check, mypy, mypy-report"
       - save-test-results
 
   tox-base:
@@ -700,6 +700,7 @@ jobs:
           command: |
             apt-get update
             apt-get install -y libsndfile1 ffmpeg
+      - install_go
       - run:
           name: Install Python dependencies
           command: pip install -U tox nox pip
