@@ -14,6 +14,11 @@ Please add to the relevant subsections under Unreleased below on every PR where 
 ### Changed
 
 - `run.finish()` may raise an exception in cases where previously it would `os._exit()` (@timoffex in https://github.com/wandb/wandb/pull/7921)
+- `run.link_artifact()` can now surface server errors. (@ibindlish in https://github.com/wandb/wandb/pull/6941)
+
+### Fixed
+
+- Handle `path_prefix`es that don't correspond to directory names when downloading artifacts by @moredatarequired in https://github.com/wandb/wandb/pull/7721
 
 ## [0.17.4] - 2024-07-03
 
