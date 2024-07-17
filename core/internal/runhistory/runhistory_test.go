@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/wandb/segmentio-encoding/json"
+	"github.com/wandb/simplejsonext"
 	"github.com/wandb/wandb/core/internal/pathtree"
 	"github.com/wandb/wandb/core/internal/runhistory"
 	"github.com/wandb/wandb/core/pkg/service"
@@ -63,8 +63,7 @@ func TestNaN(t *testing.T) {
 
 	encoded, err := rh.ToExtendedJSON()
 	require.NoError(t, err)
-	var asMap map[string]any
-	err = json.Unmarshal(encoded, &asMap)
+	asMap, err := simplejsonext.UnmarshalObject(encoded)
 	require.NoError(t, err)
 	assert.Equal(t, asMap["+inf"], math.Inf(1))
 	assert.Equal(t, asMap["-inf"], math.Inf(-1))
@@ -73,7 +72,7 @@ func TestNaN(t *testing.T) {
 
 func TestForEachNumber(t *testing.T) {
 	rh := runhistory.New()
-	rh.SetInt(pathtree.TreePath{"the", "number", "five"}, 5)
+	rh.SetInt(pathtree.PathOf("the", "number", "five"), 5)
 	_ = rh.SetFromRecord(
 		&service.HistoryItem{
 			Key: "x",
@@ -90,7 +89,7 @@ func TestForEachNumber(t *testing.T) {
 
 	numbers := make(map[string]float64)
 	rh.ForEachNumber(func(path pathtree.TreePath, value float64) bool {
-		numbers[strings.Join(path, ".")] = value
+		numbers[strings.Join(path.Labels(), ".")] = value
 		return true
 	})
 
