@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/Khan/genqlient/graphql"
+	"golang.org/x/mod/semver"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 
@@ -376,6 +377,8 @@ func (s *Sender) sendRequest(record *service.Record, request *service.Request) {
 		s.sendRequestStopStatus(record, x.StopStatus)
 	case *service.Request_JobInput:
 		s.sendRequestJobInput(x.JobInput)
+	case *service.Request_CheckVersion:
+		s.sendRequestCheckVersion(record, x.CheckVersion)
 	case nil:
 		s.logger.CaptureFatalAndPanic(
 			errors.New("sender: sendRequest: nil RequestType"))
@@ -664,31 +667,115 @@ func (s *Sender) serializeConfig(format runconfig.Format) (string, error) {
 	return string(serializedConfig), nil
 }
 
-func (s *Sender) sendForkRun(record *service.Record, _ *service.RunRecord) {
-	if record.GetControl().GetReqResp() || record.GetControl().GetMailboxSlot() != "" {
-		result := &service.RunUpdateResult{
-			Error: &service.ErrorInfo{
-				Code:    service.ErrorInfo_UNSUPPORTED,
-				Message: "`fork_from` is not yet supported",
-			},
+func (s *Sender) sendForkRun(record *service.Record, run *service.RunRecord) {
+
+	fork := s.settings.GetForkFrom()
+	update, err := runbranch.NewForkBranch(
+		fork.GetRun(),
+		fork.GetMetric(),
+		fork.GetValue(),
+	).ApplyChanges(s.startState, runbranch.RunPath{
+		Entity:  s.startState.Entity,
+		Project: s.startState.Project,
+		RunID:   s.startState.RunID,
+	})
+
+	if err != nil {
+		s.logger.CaptureError(
+			fmt.Errorf("send: sendRun: failed to update run state: %s", err),
+		)
+		// provide more info about the error to the user
+		if errType, ok := err.(*runbranch.BranchError); ok {
+			if errType.Response != nil {
+				if record.GetControl().GetReqResp() || record.GetControl().GetMailboxSlot() != "" {
+					result := &service.RunUpdateResult{
+						Error: errType.Response,
+					}
+					s.respond(record, result)
+				}
+			}
+			return
 		}
-		s.respond(record, result)
 	}
+
+	s.startState.Merge(update)
+
+	s.upsertRun(record, run)
 }
 
-func (s *Sender) sendRewindRun(record *service.Record, _ *service.RunRecord) {
-	if record.GetControl().GetReqResp() || record.GetControl().GetMailboxSlot() != "" {
-		result := &service.RunUpdateResult{
-			Error: &service.ErrorInfo{
-				Code:    service.ErrorInfo_UNSUPPORTED,
-				Message: "`resume_from` is not yet supported",
-			},
+func (s *Sender) sendRewindRun(record *service.Record, run *service.RunRecord) {
+
+	// if there is no client we can't do anything so we just return
+	if s.graphqlClient == nil {
+		if record.GetControl().GetReqResp() || record.GetControl().GetMailboxSlot() != "" {
+			s.respond(record,
+				&service.RunUpdateResult{
+					Run: run,
+				},
+			)
 		}
-		s.respond(record, result)
+		return
+	}
+
+	rewind := s.settings.GetResumeFrom()
+	update, err := runbranch.NewRewindBranch(
+		s.runWork.BeforeEndCtx(),
+		s.graphqlClient,
+		rewind.GetRun(),
+		rewind.GetMetric(),
+		rewind.GetValue(),
+	).ApplyChanges(s.startState, runbranch.RunPath{
+		Entity:  s.startState.Entity,
+		Project: s.startState.Project,
+		RunID:   s.startState.RunID,
+	})
+
+	if err != nil {
+		s.logger.Error(
+			"send: sendRun: failed to update run state",
+			"error", err,
+		)
+		// provide more info about the error to the user
+		if errType, ok := err.(*runbranch.BranchError); ok {
+			if errType.Response != nil {
+				if record.GetControl().GetReqResp() || record.GetControl().GetMailboxSlot() != "" {
+					result := &service.RunUpdateResult{
+						Error: errType.Response,
+					}
+					s.respond(record, result)
+				}
+			}
+			return
+		}
+	}
+
+	s.startState.Merge(update)
+	// Merge the resumed config into the run config
+	s.runConfig.MergeResumedConfig(s.startState.Config)
+
+	if record.GetControl().GetReqResp() || record.GetControl().GetMailboxSlot() != "" {
+		proto.Merge(run, s.startState.Proto())
+		s.respond(record,
+			&service.RunUpdateResult{
+				Run: run,
+			},
+		)
 	}
 }
 
 func (s *Sender) sendResumeRun(record *service.Record, run *service.RunRecord) {
+
+	// if there is no client we can't do anything so we just return
+	if s.graphqlClient == nil {
+		if record.GetControl().GetReqResp() || record.GetControl().GetMailboxSlot() != "" {
+			s.respond(record,
+				&service.RunUpdateResult{
+					Run: run,
+				},
+			)
+		}
+		return
+	}
 
 	update, err := runbranch.NewResumeBranch(
 		s.runWork.BeforeEndCtx(),
@@ -751,17 +838,6 @@ func (s *Sender) sendRun(record *service.Record, run *service.RunRecord) {
 		)
 	}
 
-	// if there is no graphql client, we don't need to do anything
-	if s.graphqlClient == nil {
-		if record.GetControl().GetReqResp() || record.GetControl().GetMailboxSlot() != "" {
-			s.respond(record,
-				&service.RunUpdateResult{
-					Run: runClone,
-				})
-		}
-		return
-	}
-
 	// The first run record sent by the client is encoded incorrectly,
 	// causing it to overwrite the entire "_wandb" config key rather than
 	// just the necessary part ("_wandb/code_path"). This can overwrite
@@ -798,14 +874,15 @@ func (s *Sender) sendRun(record *service.Record, run *service.RunRecord) {
 		switch {
 		case isResume != "" && isRewind != nil || isResume != "" && isFork != nil || isRewind != nil && isFork != nil:
 			if record.GetControl().GetReqResp() || record.GetControl().GetMailboxSlot() != "" {
-				result := &service.RunUpdateResult{
-					Error: &service.ErrorInfo{
-						Code: service.ErrorInfo_USAGE,
-						Message: "`resume`, `fork_from`, and `resume_from` are mutually exclusive. " +
-							"Please specify only one of them.",
+				s.respond(record,
+					&service.RunUpdateResult{
+						Error: &service.ErrorInfo{
+							Code: service.ErrorInfo_USAGE,
+							Message: "`resume`, `fork_from`, and `resume_from` are mutually exclusive. " +
+								"Please specify only one of them.",
+						},
 					},
-				}
-				s.respond(record, result)
+				)
 			}
 			s.logger.Error("sender: sendRun: user provided more than one of resume, rewind, or fork")
 			return
@@ -819,7 +896,7 @@ func (s *Sender) sendRun(record *service.Record, run *service.RunRecord) {
 			s.sendForkRun(record, runClone)
 			return
 		default:
-			// no resume, rewind, or fork provided
+			// no branching, just send the run
 		}
 	}
 
@@ -827,6 +904,18 @@ func (s *Sender) sendRun(record *service.Record, run *service.RunRecord) {
 }
 
 func (s *Sender) upsertRun(record *service.Record, run *service.RunRecord) {
+
+	// if there is no graphql client, we don't need to do anything
+	if s.graphqlClient == nil {
+		if record.GetControl().GetReqResp() || record.GetControl().GetMailboxSlot() != "" {
+			s.respond(record,
+				&service.RunUpdateResult{
+					Run: run,
+				})
+		}
+		return
+	}
+
 	// start a new context with an additional argument from the parent context
 	// this is used to pass the retry function to the graphql client
 	ctx := context.WithValue(
@@ -908,6 +997,7 @@ func (s *Sender) upsertRun(record *service.Record, run *service.RunRecord) {
 	if data == nil || data.GetUpsertBucket() == nil || data.GetUpsertBucket().GetBucket() == nil {
 		s.logger.Error("sender: upsertRun: upsert bucket response is empty")
 	} else {
+
 		bucket := data.GetUpsertBucket().GetBucket()
 
 		project := bucket.GetProject()
@@ -919,14 +1009,21 @@ func (s *Sender) upsertRun(record *service.Record, run *service.RunRecord) {
 			entityName = entity.GetName()
 			projectName = project.GetName()
 		}
-		s.startState.Merge(&runbranch.RunParams{
-			StorageID:   bucket.GetId(),
-			Entity:      utils.ZeroIfNil(&entityName),
-			Project:     utils.ZeroIfNil(&projectName),
-			RunID:       bucket.GetName(),
-			DisplayName: utils.ZeroIfNil(bucket.GetDisplayName()),
-			SweepID:     utils.ZeroIfNil(bucket.GetSweepName()),
-		})
+
+		fileStreamOffset := make(fs.FileStreamOffsetMap)
+		fileStreamOffset[fs.HistoryChunk] = utils.ZeroIfNil(bucket.GetHistoryLineCount())
+
+		params := &runbranch.RunParams{
+			StorageID:        bucket.GetId(),
+			Entity:           utils.ZeroIfNil(&entityName),
+			Project:          utils.ZeroIfNil(&projectName),
+			RunID:            bucket.GetName(),
+			DisplayName:      utils.ZeroIfNil(bucket.GetDisplayName()),
+			SweepID:          utils.ZeroIfNil(bucket.GetSweepName()),
+			FileStreamOffset: fileStreamOffset,
+		}
+
+		s.startState.Merge(params)
 	}
 
 	if record.GetControl().GetReqResp() || record.GetControl().GetMailboxSlot() != "" {
@@ -1362,6 +1459,77 @@ func (s *Sender) sendRequestSync(record *service.Record, request *service.SyncRe
 		Uuid:    record.Uuid,
 	}
 	s.fwdRecord(rec)
+}
+
+func (s *Sender) sendRequestCheckVersion(record *service.Record, request *service.CheckVersionRequest) {
+	currVersion := request.GetCurrentVersion()
+	// if the current version is empty, we can't check for a new version
+	if currVersion == "" {
+		s.logger.Error("sender: sendRequestCheckVersion: current version is empty")
+		s.respond(record,
+			&service.Response{},
+		)
+		return
+	}
+
+	// if there is no graphql client, we don't need to do anything as we can't
+	// check for the server provided version
+	if s.graphqlClient == nil {
+		s.respond(record,
+			&service.Response{},
+		)
+		return
+	}
+
+	respone, err := gql.ServerInfo(s.runWork.BeforeEndCtx(), s.graphqlClient)
+	// if the request failed, we can't check for the server provided version this
+	// check is best effort
+	if err != nil {
+		s.logger.Error("sender: sendRequestCheckVersion: failed to get server info", "error", err)
+		s.respond(record,
+			&service.Response{},
+		)
+		return
+	}
+
+	// if the response is nil or the server info is nil, we can't check for the
+	// server provided version this check is best effort
+	if respone == nil || respone.GetServerInfo() == nil {
+		s.logger.Error("sender: sendRequestCheckVersion: server info is nil")
+		s.respond(record,
+			&service.Response{},
+		)
+		return
+	}
+
+	// For now, the server should be compatible with all client versions
+	// so we only check if the current version is less than the max version
+	switch x := respone.GetServerInfo().GetCliVersionInfo().(type) {
+	case map[string]any:
+		if maxVersion, ok := x["max_cli_version"].(string); ok {
+			currVersion = strings.Replace(currVersion, ".dev", "-dev", 1)
+			if semver.Compare("v"+currVersion, "v"+maxVersion) == -1 {
+				s.respond(record,
+					&service.Response{
+						ResponseType: &service.Response_CheckVersionResponse{
+							CheckVersionResponse: &service.CheckVersionResponse{
+								UpgradeMessage: fmt.Sprintf(
+									"There is a new version of wandb available. Please upgrade to %s", maxVersion,
+								),
+							},
+						},
+					},
+				)
+				return
+			}
+		}
+	default:
+		err := fmt.Errorf("server client version is of type %T should be a map", x)
+		s.logger.Error("sender: sendRequestCheckVersion: failed to get server info", "error", err)
+	}
+	s.respond(record,
+		&service.Response{},
+	)
 }
 
 func (s *Sender) sendRequestStopStatus(record *service.Record, _ *service.StopStatusRequest) {
