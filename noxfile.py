@@ -102,6 +102,8 @@ def run_pytest(
         "CI": session.env.get("CI"),
         # Required for the importers tests
         "WANDB_TEST_SERVER_URL2": session.env.get("WANDB_TEST_SERVER_URL2"),
+        # Required for functional tests with openai
+        "OPENAI_API_KEY": session.env.get("OPENAI_API_KEY"),
     }
 
     # Print 20 slowest tests.
@@ -391,50 +393,6 @@ def develop(session: nox.Session) -> None:
             "--strip",
             external=True,
         )
-
-
-@nox.session(python=False, name="list-failing-tests-wandb-core")
-def list_failing_tests_wandb_core(session: nox.Session) -> None:
-    """Lists the core failing tests grouped by feature."""
-    import pandas as pd
-    import pytest
-
-    class MyPlugin:
-        def __init__(self):
-            self.collected = []
-            self.features = []
-
-        def pytest_collection_modifyitems(self, items):
-            for item in items:
-                marks = item.own_markers
-                for mark in marks:
-                    if mark.name == "wandb_core_failure":
-                        self.collected.append(item.nodeid)
-                        self.features.append(
-                            {
-                                "name": item.nodeid,
-                                "feature": mark.kwargs.get("feature", "unspecified"),
-                            }
-                        )
-
-        def pytest_collection_finish(self):
-            session.log("\n\nFailing tests grouped by feature:")
-            df = pd.DataFrame(self.features)
-            for feature, group in df.groupby("feature"):
-                session.log(f"\n{feature}:")
-                for name in group["name"]:
-                    session.log(f"  {name}")
-
-    my_plugin = MyPlugin()
-    pytest.main(
-        [
-            "-m",
-            "wandb_core_failure",
-            "tests/pytest_tests/system_tests/test_core",
-            "--collect-only",
-        ],
-        plugins=[my_plugin],
-    )
 
 
 @nox.session(python=False, name="graphql-codegen-schema-change")

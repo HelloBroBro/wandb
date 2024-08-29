@@ -11,11 +11,18 @@ Please add to the relevant subsections under Unreleased below on every PR where 
 
 ## Unreleased
 
+### Changed
+
+- Changed the default system metrics sampling interval to 10 seconds without averaging, while allowing custom intervals via `wandb.init(settings=wandb.Settings(_stats_sampling_interval=...))` (@dmitryduev in https://github.com/wandb/wandb/pull/8208)
+
+## [0.17.8] - 2024-08-28
+
 ### Added
 
 - Capture SM (Streaming Multiprocessor), memory, and graphics clock speed (MHz), (un)corrected error counts, fan speed (%), and encoder utilization for Nvidia GPU devices when using core (@dmitryduev in https://github.com/wandb/wandb/pull/8144)
 - Allow iterating over `wandb.Config` like a dictionary (@fsherry in https://github.com/wandb/wandb/pull/8129)
 - PR curves, images and histograms are supported when using TensorBoard with core enabled (@timoffex in https://github.com/wandb/wandb/pull/8181, https://github.com/wandb/wandb/pull/8188, https://github.com/wandb/wandb/pull/8189)
+- Added `wandb.require("legacy-service")` as the opt-out analog of `wandb.require("core")` (@timoffex in https://github.com/wandb/wandb/pull/8201)
 
 ### Fixed
 
