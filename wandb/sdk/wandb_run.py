@@ -20,7 +20,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import IntEnum
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Callable, Literal, NamedTuple, Sequence, TextIO
+from typing import TYPE_CHECKING, Any, Callable, NamedTuple, Sequence, TextIO
+
+if sys.version_info < (3, 8):
+    from typing_extensions import Literal
+else:
+    from typing import Literal
 
 import requests
 
@@ -3040,8 +3045,9 @@ class Run:
 
         Arguments:
             artifact_or_name: (str or Artifact) An artifact name.
-                May be prefixed with entity/project/. Valid names
-                can be in the following forms:
+                May be prefixed with project/ or entity/project/.
+                If no entity is specified in the name, the Run or API setting's entity is used.
+                Valid names can be in the following forms:
                     - name:version
                     - name:alias
                 You can also pass an Artifact object created by calling `wandb.Artifact`
