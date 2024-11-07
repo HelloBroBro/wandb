@@ -11,6 +11,13 @@ Please add to the relevant subsections under Unreleased below on every PR where 
 
 ## Unreleased
 
+### Deprecated
+
+- The `quiet` argument to `wandb.run.finish()` is deprecated, use `wandb.Settings(quiet=...)` to set this instead. (@kptkin in https://github.com/wandb/wandb/pull/8794)
+
+
+## [0.18.6] - 2024-11-06
+
 ### Added
 
 - Add a boolean `overwrite` param to `Artifact.add()`/`Artifact.add_file()` to allow overwrite of previously-added artifact files (@tonyyli-wandb in https://github.com/wandb/wandb/pull/8553)
